@@ -169,8 +169,19 @@ class MLStrategy(Strategy):
         if len(X) == 0:
             return signals
         
-        # Generate predictions
-        predictions = self.model.predict(X).flatten()
+        # Generate predictions using the PyTorch model wrapper
+        if hasattr(self.model, 'predict'):
+            # Use the wrapper's predict method if available
+            predictions = self.model.predict(X).flatten()
+        else:
+            # Use the PyTorch model directly with proper conversion
+            import torch
+            import numpy as np
+            
+            # Convert to tensor for prediction
+            with torch.no_grad():
+                X_tensor = torch.tensor(X, dtype=torch.float32)
+                predictions = self.model(X_tensor).numpy().flatten()
         
         # Convert predictions to signals
         signal_indices = data.index[self.window_size:]

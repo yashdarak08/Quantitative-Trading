@@ -4,11 +4,13 @@ import argparse
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import torch
 from datetime import datetime
+from torch.utils.data import DataLoader, TensorDataset
 
 # Import modules
 from data_loader import fetch_data, prepare_dataset
-from model import build_model
+from model import build_model, ModelTrainer, ModelWrapper, TimeSeriesDataset
 from strategy import (MomentumStrategy, MeanReversionStrategy, MovingAverageCrossoverStrategy, 
                      MACDStrategy, EnsembleStrategy, MLStrategy)
 from backtest import BacktestEngine
@@ -31,8 +33,15 @@ def save_model(model, path='models'):
     """
     os.makedirs(path, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-    model_path = os.path.join(path, f'model_{timestamp}')
-    model.save(model_path)
+    model_path = os.path.join(path, f'model_{timestamp}.pt')
+    
+    # Save model state dict and metadata
+    torch.save({
+        'model_state_dict': model.state_dict(),
+        'model_type': model.__class__.__name__,
+        'timestamp': timestamp
+    }, model_path)
+    
     print(f"Model saved to {model_path}")
     return model_path
 
@@ -40,8 +49,49 @@ def load_model(model_path):
     """
     Load a saved model.
     """
-    from tensorflow.keras.models import load_model as keras_load_model
-    return keras_load_model(model_path)
+    checkpoint = torch.load(model_path)
+    
+    # Determine input/output dimensions and model type
+    if 'model_type' in checkpoint:
+        model_type = checkpoint['model_type']
+    else:
+        # Try to infer model type from state dict
+        state_dict = checkpoint['model_state_dict']
+        if any('lstm' in key for key in state_dict.keys()):
+            model_type = 'LSTMModel'
+        elif any('gru' in key for key in state_dict.keys()):
+            model_type = 'GRUModel'
+        else:
+            model_type = 'RNNModel'
+    
+    # Get input/output dimensions from first and last layer
+    state_dict = checkpoint['model_state_dict']
+    for key, value in state_dict.items():
+        if 'weight_ih_l0' in key:  # First layer weights
+            input_dim = value.shape[1] // 4 if model_type == 'LSTMModel' else value.shape[1]
+        if 'fc.weight' in key:  # Last layer weights
+            output_dim = value.shape[0]
+            hidden_dim = value.shape[1]
+    
+    # Create model of the right type
+    if model_type == 'LSTMModel':
+        from model import LSTMModel
+        model = LSTMModel(input_dim=input_dim, hidden_dim=hidden_dim, output_dim=output_dim)
+    elif model_type == 'GRUModel':
+        from model import GRUModel
+        model = GRUModel(input_dim=input_dim, hidden_dim=hidden_dim, output_dim=output_dim)
+    else:
+        from model import RNNModel
+        model = RNNModel(input_dim=input_dim, hidden_dim=hidden_dim, output_dim=output_dim)
+    
+    # Load state dict
+    model.load_state_dict(checkpoint['model_state_dict'])
+    
+    # Create trainer and wrapper for consistent interface
+    trainer = ModelTrainer(model)
+    wrapper = ModelWrapper(model, trainer)
+    
+    return wrapper
 
 def train_forecasting_model(X_train, y_train, X_test, y_test, config):
     """
@@ -53,28 +103,40 @@ def train_forecasting_model(X_train, y_train, X_test, y_test, config):
     epochs = config['model']['epochs']
     batch_size = config['model']['batch_size']
     
+    # Determine input shape
+    input_shape = (X_train.shape[1], X_train.shape[2])
+    
     # Build the model
     model = build_model(
-        input_shape=(X_train.shape[1], X_train.shape[2]),
+        input_shape=input_shape,
         lstm_units=lstm_units,
         dropout_rate=dropout,
         model_type='LSTM'
     )
     
+    # Create dataset and data loader
+    train_dataset = TimeSeriesDataset(X_train, y_train)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    
+    val_dataset = TimeSeriesDataset(X_test, y_test)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size)
+    
+    # Create trainer
+    trainer = ModelTrainer(model, learning_rate=0.001)
+    
     # Train the model
     print("Training model...")
-    history = model.fit(
-        X_train, y_train,
-        epochs=epochs,
+    history = trainer.train(
+        X_train, y_train, X_test, y_test,
         batch_size=batch_size,
-        validation_data=(X_test, y_test),
+        epochs=epochs,
         verbose=1
     )
     
     # Plot training history
     plt.figure(figsize=(10, 6))
-    plt.plot(history.history['loss'], label='Training Loss')
-    plt.plot(history.history['val_loss'], label='Validation Loss')
+    plt.plot(history['train_loss'], label='Training Loss')
+    plt.plot(history['val_loss'], label='Validation Loss')
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
     plt.title('Model Training History')
@@ -82,7 +144,11 @@ def train_forecasting_model(X_train, y_train, X_test, y_test, config):
     plt.grid(True)
     plt.savefig('models/training_history.png')
     
-    return model
+    # Create wrapper for consistent interface
+    wrapper = ModelWrapper(model, trainer)
+    wrapper.history = history
+    
+    return wrapper
 
 def create_strategy(strategy_name, config, model=None):
     """
@@ -189,7 +255,15 @@ def main():
     parser.add_argument('--train', action='store_true', help='Train forecasting model')
     parser.add_argument('--optimize', action='store_true', help='Optimize strategy parameters')
     parser.add_argument('--model_path', help='Path to saved model')
+    parser.add_argument('--device', default='', help='Device to use (cpu, cuda)')
     args = parser.parse_args()
+    
+    # Set device for PyTorch
+    if args.device:
+        device = torch.device(args.device)
+    else:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Using device: {device}")
     
     # Load configuration
     config = load_config(args.config)
@@ -237,7 +311,8 @@ def main():
                 model = train_forecasting_model(X_train, y_train, X_test, y_test, config)
                 
                 # Save model
-                model_path = save_model(model)
+                model_path = save_model(model.model)
+                model.model_path = model_path
             elif args.model_path:
                 # Load saved model
                 model = load_model(args.model_path)
