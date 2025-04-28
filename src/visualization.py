@@ -5,6 +5,7 @@ import matplotlib.dates as mdates
 from matplotlib.ticker import FuncFormatter
 import seaborn as sns
 from datetime import datetime, timedelta
+import os
 
 def plot_portfolio_performance(backtest_results, strategy_name=None, figsize=(12, 10)):
     """
