@@ -158,6 +158,8 @@ class MLStrategy(Strategy):
         X = X.reshape((X.shape[0], X.shape[1], 1))
         return X
     
+    # In src/strategy.py, replace the generate_signals method in MLStrategy class:
+
     def generate_signals(self, data):
         """Generate trading signals based on model predictions"""
         # Prepare features
@@ -169,31 +171,46 @@ class MLStrategy(Strategy):
         if len(X) == 0:
             return signals
         
-        # Generate predictions using the PyTorch model wrapper
-        if hasattr(self.model, 'predict'):
-            # Use the wrapper's predict method if available
-            predictions = self.model.predict(X).flatten()
-        else:
-            # Use the PyTorch model directly with proper conversion
-            import torch
-            import numpy as np
-            
-            # Convert to tensor for prediction
-            with torch.no_grad():
-                X_tensor = torch.tensor(X, dtype=torch.float32)
-                predictions = self.model(X_tensor).numpy().flatten()
+        # Generate predictions using the model
+        try:
+            # For PyTorch model wrapper
+            if hasattr(self.model, 'predict'):
+                predictions = self.model.predict(X).flatten()
+            # For direct PyTorch model
+            else:
+                import torch
+                with torch.no_grad():
+                    X_tensor = torch.tensor(X, dtype=torch.float32)
+                    predictions = self.model(X_tensor).cpu().numpy().flatten()
+        except Exception as e:
+            print(f"Error generating predictions: {str(e)}")
+            return signals
+        
+        # Signal indices are shifted by window_size from the original data
+        signal_indices = data.index[self.window_size:]
+        
+        # Ensure predictions array matches the expected length
+        if len(predictions) != len(signal_indices):
+            print(f"Warning: Prediction length ({len(predictions)}) doesn't match expected length ({len(signal_indices)})")
+            # Adjust predictions array if needed
+            if len(predictions) > len(signal_indices):
+                predictions = predictions[:len(signal_indices)]
+            else:
+                # Pad with zeros if predictions are fewer
+                padding = np.zeros(len(signal_indices) - len(predictions))
+                predictions = np.concatenate([predictions, padding])
         
         # Convert predictions to signals
-        signal_indices = data.index[self.window_size:]
         signals_array = np.zeros(len(predictions))
         
+        # Calculate price direction based on predictions
         for i in range(1, len(predictions)):
-            if predictions[i] - predictions[i-1] > self.threshold:
-                signals_array[i] = 1
-            elif predictions[i] - predictions[i-1] < -self.threshold:
-                signals_array[i] = -1
+            if predictions[i] > predictions[i-1] + self.threshold:
+                signals_array[i] = 1  # Bullish
+            elif predictions[i] < predictions[i-1] - self.threshold:
+                signals_array[i] = -1  # Bearish
             else:
-                signals_array[i] = 0
+                signals_array[i] = 0  # Neutral
         
         # Update the signals Series
         signals.loc[signal_indices] = signals_array

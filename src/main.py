@@ -19,12 +19,46 @@ from optimization import (optimize_momentum_strategy, optimize_mean_reversion_st
                           optimize_moving_average_strategy, optimize_macd_strategy)
 from visualization import create_performance_report
 
+# In src/main.py, replace the load_config function:
+
 def load_config(path='config/config.yaml'):
     """
     Load configuration parameters from a YAML file.
     """
+    import os
+    
+    # Check if the file exists
+    if not os.path.exists(path):
+        print(f"Warning: Config file {path} not found. Using default configuration.")
+        return {
+            'data': {
+                'tickers': ['^GSPC'],  # S&P 500 by default
+                'start_date': '2020-01-01',
+                'end_date': '2023-01-01'
+            },
+            'model': {
+                'epochs': 50,
+                'batch_size': 32,
+                'lstm_units': 50,
+                'dropout': 0.2
+            },
+            'strategy': {
+                'threshold': 0.0,
+                'stop_loss': 0.05,
+                'take_profit': 0.1,
+                'transaction_cost': 0.001
+            }
+        }
+    
+    # Load configuration from file
     with open(path, 'r') as f:
-        config = yaml.safe_load(f)
+        try:
+            import yaml
+            config = yaml.safe_load(f)
+        except Exception as e:
+            print(f"Error loading config file: {str(e)}. Using default configuration.")
+            return {}
+    
     return config
 
 def save_model(model, path='models'):
