@@ -596,3 +596,73 @@ def save_plots(figures, directory='reports', prefix='', timestamp=None):
             plt.close(fig)
     
     print(f"Saved {len([f for f in figures if f is not None])} plots to {directory}/")
+
+def create_comprehensive_report(backtest_results, metrics, trades, strategies_comparison=None, save_path=None):
+    """
+    Create a comprehensive performance report with all visualizations.
+    
+    Parameters:
+        backtest_results (pd.DataFrame): DataFrame with backtest results
+        metrics (dict): Dictionary of performance metrics
+        trades (list): List of trade dictionaries
+        strategies_comparison (dict, optional): Dict of strategy names to their metrics for comparison
+        save_path (str, optional): Directory to save the report figures
+        
+    Returns:
+        dict: Dictionary of figure objects
+    """
+    figures = {}
+    
+    # Portfolio performance
+    figures['portfolio'] = plot_portfolio_performance(backtest_results, 
+                                                     strategy_name=metrics.get('strategy_name', 'Strategy'))
+    
+    # Return distribution
+    figures['returns'] = plot_return_distribution(backtest_results['Strategy_Net'], 
+                                                 benchmark_returns=backtest_results['Return'])
+    
+    # Rolling performance
+    figures['rolling'] = plot_rolling_performance(backtest_results['Strategy_Net'], 
+                                                 benchmark_returns=backtest_results['Return'])
+    
+    # Performance metrics table
+    figures['metrics'] = plot_performance_table(metrics)
+    
+    # Trade analysis
+    if trades and len(trades) > 0:
+        figures['trades'] = plot_trade_analysis(trades)
+    
+    # Strategies comparison
+    if strategies_comparison:
+        # Create comparison dataframe
+        comparison_df = pd.DataFrame({
+            name: {
+                'Sharpe Ratio': metrics['sharpe_ratio_strategy'],
+                'Annual Return': metrics['annual_return_strategy'],
+                'Max Drawdown': metrics['max_drawdown_strategy'],
+                'Win Rate': metrics.get('win_rate', 0),
+            } for name, metrics in strategies_comparison.items()
+        })
+        
+        # Plot comparison bar charts
+        figures['strategies_comparison'] = plt.figure(figsize=(12, 10))
+        for i, metric in enumerate(['Sharpe Ratio', 'Annual Return', 'Max Drawdown', 'Win Rate']):
+            ax = plt.subplot(2, 2, i+1)
+            comparison_df.loc[metric].plot(kind='bar', ax=ax)
+            ax.set_title(metric)
+            ax.grid(True)
+            
+            # Format percentage metrics
+            if metric in ['Annual Return', 'Max Drawdown', 'Win Rate']:
+                ax.yaxis.set_major_formatter(FuncFormatter(lambda y, _: f'{y:.1%}'))
+        
+        plt.tight_layout()
+    
+    # Save figures if path provided
+    if save_path:
+        os.makedirs(save_path, exist_ok=True)
+        for name, fig in figures.items():
+            if fig:
+                fig.savefig(os.path.join(save_path, f"{name}.png"), dpi=300, bbox_inches='tight')
+    
+    return figures
